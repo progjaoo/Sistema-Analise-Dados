@@ -1,0 +1,8 @@
+Options -MultiViews
+RewriteEngine On
+
+# Mantém arquivos reais e envia as demais rotas para o React Router.
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+RewriteRule ^ index.html [L]

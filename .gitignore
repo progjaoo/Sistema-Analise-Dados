@@ -1,0 +1,9 @@
+node_modules/
+.env
+dist/
+coverage/
+uploads/
+*.log
+.DS_Store
+work/node_modules
+outputs/previews/
