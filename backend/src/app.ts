@@ -3,6 +3,7 @@ import express from "express";
 import { pinoHttp } from "pino-http";
 import { createAnalysisController } from "./controllers/analysisController.js";
 import { createAuthController } from "./controllers/authController.js";
+import { loadedEnvFiles } from "./config/env.js";
 import { createImportController } from "./controllers/importController.js";
 import { createUserController } from "./controllers/userController.js";
 import { logger } from "./logger.js";
@@ -65,7 +66,22 @@ export function createApp({ repository = createRepository(), env = process.env }
   }));
   app.use(express.json({ limit: "1mb" }));
 
-  app.get("/api/health", (_req, res) => res.json({ status: "ok", storage: repository.constructor.name, timestamp: new Date().toISOString() }));
+  app.get("/api/health", (_req, res) => res.json({
+    status: "ok",
+    storage: repository.constructor.name,
+    database: {
+      configured: Boolean(env.DB_HOST && env.DB_USER && env.DB_NAME),
+      hostSet: Boolean(env.DB_HOST),
+      userSet: Boolean(env.DB_USER),
+      nameSet: Boolean(env.DB_NAME),
+    },
+    env: {
+      nodeEnv: env.NODE_ENV || null,
+      requireDatabase: env.REQUIRE_DATABASE || null,
+      loadedFiles: loadedEnvFiles.length,
+    },
+    timestamp: new Date().toISOString(),
+  }));
   app.use("/api/auth", authRoutes(createAuthController(repository, auth.signLocalToken, emailService, env), auth));
   const imports = importRoutes(createImportController(repository, emailService, env), auth, env);
   app.use("/api/imports", imports); app.use("/api/uploads", imports);

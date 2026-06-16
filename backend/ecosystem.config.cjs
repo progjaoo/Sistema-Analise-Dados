@@ -1,6 +1,6 @@
 module.exports = {
   apps: [{
-    name: "maravilha-ibope-api",
+    name: "api-ibope",
     script: "dist/src/server.js",
     cwd: __dirname,
     instances: 1,

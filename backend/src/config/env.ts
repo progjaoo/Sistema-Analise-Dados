@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 const isString = (value: string | undefined): value is string => Boolean(value);
 const unique = (items: Array<string | undefined>) => [...new Set(items.filter(isString))];
 
+export const loadedEnvFiles: string[] = [];
+
 export function loadEnv() {
   const candidates = unique([
     process.env.DOTENV_CONFIG_PATH,
@@ -16,7 +18,10 @@ export function loadEnv() {
   ]);
 
   for (const candidate of candidates) {
-    if (existsSync(candidate)) dotenv.config({ path: candidate, override: false });
+    if (existsSync(candidate)) {
+      dotenv.config({ path: candidate, override: false });
+      loadedEnvFiles.push(candidate);
+    }
   }
 }
 
