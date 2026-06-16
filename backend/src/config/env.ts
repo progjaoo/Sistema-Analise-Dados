@@ -13,13 +13,14 @@ export function loadEnv() {
     process.env.DOTENV_CONFIG_PATH,
     path.resolve(process.cwd(), ".env"),
     path.resolve(process.cwd(), "backend/.env"),
-    fileURLToPath(new URL("../../.env", import.meta.url)),
     fileURLToPath(new URL("../../../.env", import.meta.url)),
+    fileURLToPath(new URL("../../.env", import.meta.url)),
+    fileURLToPath(new URL("../../../../.env", import.meta.url)),
   ]);
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
-      dotenv.config({ path: candidate, override: false });
+      dotenv.config({ path: candidate, override: true });
       loadedEnvFiles.push(candidate);
     }
   }

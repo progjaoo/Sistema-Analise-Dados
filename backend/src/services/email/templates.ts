@@ -4,6 +4,7 @@ export type EmailBrand = {
 };
 
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
+const plain = (lines: string[]) => lines.join("\n");
 
 const layout = (brand: EmailBrand, title: string, content: string) => `<!doctype html>
 <html lang="pt-BR">
@@ -55,22 +56,27 @@ const alternativeLink = (url: string) => `<p style="margin:18px 0 0;color:#A7B0C
 export const emailTemplates = {
   welcome: (brand: EmailBrand, name: string, loginUrl: string) => ({
     subject: "Bem-vindo ao Painel IBOPE Maravilha FM",
+    text: plain([`Olá, ${name}.`, "Seu cadastro foi criado com sucesso.", `Acesse: ${loginUrl}`]),
     html: layout(brand, "Bem-vindo ao Painel IBOPE Maravilha FM", `<p>Olá, <strong>${escapeHtml(name)}</strong>.</p><p>Seu cadastro foi criado com sucesso. Seu acesso inicial permite visualizar as análises disponíveis no painel.</p>${button("Acessar Sistema", loginUrl)}${alternativeLink(loginUrl)}`),
   }),
   invitation: (brand: EmailBrand, name: string, loginUrl: string) => ({
     subject: "Bem-vindo ao Painel IBOPE Maravilha FM",
+    text: plain([`Olá, ${name}.`, "Um administrador criou seu acesso ao Painel IBOPE Maravilha FM.", `Acesse: ${loginUrl}`]),
     html: layout(brand, "Seu acesso está disponível", `<p>Olá, <strong>${escapeHtml(name)}</strong>.</p><p>Um administrador criou seu acesso ao Painel IBOPE Maravilha FM.</p>${button("Acessar Sistema", loginUrl)}${alternativeLink(loginUrl)}`),
   }),
   passwordReset: (brand: EmailBrand, name: string, resetUrl: string) => ({
     subject: "Recuperação de Senha - Painel IBOPE Maravilha FM",
+    text: plain([`Olá, ${name}.`, "Recebemos uma solicitação para redefinir sua senha de acesso ao Painel IBOPE Maravilha FM.", "Use o link abaixo para redefinir sua senha. Ele expira em 60 minutos.", resetUrl, "", "Se você não solicitou a recuperação, ignore este e-mail."]),
     html: layout(brand, "Recuperação de senha", `<p>Olá, <strong>${escapeHtml(name)}</strong>.</p><p>Recebemos uma solicitação para redefinir sua senha de acesso ao Painel IBOPE Maravilha FM.</p>${button("Redefinir Senha", resetUrl)}${alternativeLink(resetUrl)}<p style="margin-top:22px;color:#A7B0C0;">Este link expira em 60 minutos. Caso você não tenha solicitado a recuperação, ignore este e-mail.</p>`),
   }),
   importCompleted: (brand: EmailBrand, period: string, count: number) => ({
     subject: `Importação IBOPE concluída: ${period}`,
+    text: plain([`Importação IBOPE concluída: ${period}`, `${count} análises foram disponibilizadas no dashboard.`, `Acesse: ${brand.appUrl}`]),
     html: layout(brand, "Importação concluída", `<p>O período <strong>${escapeHtml(period)}</strong> foi processado com sucesso.</p><p>${count} análises foram disponibilizadas no dashboard.</p>${button("Acessar Sistema", brand.appUrl)}`),
   }),
   importFailed: (brand: EmailBrand, file: string, message: string) => ({
     subject: `Falha na importação IBOPE: ${file}`,
+    text: plain([`Falha na importação IBOPE: ${file}`, message, `Acesse: ${brand.appUrl}`]),
     html: layout(brand, "Falha na importação", `<p>Não foi possível processar <strong>${escapeHtml(file)}</strong>.</p><p>${escapeHtml(message)}</p>${button("Acessar Sistema", brand.appUrl)}`),
   }),
 };
