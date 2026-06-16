@@ -12,6 +12,7 @@
 
 @layer components {
   .panel { @apply rounded-2xl border border-white bg-white p-4 shadow-panel sm:p-5; }
+  .kpi-card { @apply rounded-2xl border border-white bg-gradient-to-br from-white to-orange-50 p-5 shadow-panel; }
   .eyebrow { @apply text-[11px] font-extrabold uppercase tracking-[.2em] text-radio; }
   .nav-link { @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-orange-50 transition hover:bg-white/15 hover:text-white; }
   .nav-link-active { @apply bg-white text-brand-deeper shadow-lg shadow-brand-deeper/20; }

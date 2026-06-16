@@ -3,9 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "create-admin": "node scripts/createAdmin.js",
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js",
+    "build": "tsc -p tsconfig.json",
+    "create-admin": "tsx scripts/seedUsers.ts",
+    "db:setup": "tsx scripts/setupDatabase.ts",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/src/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
@@ -16,11 +19,22 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.0",
     "mysql2": "^3.14.0",
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0",
+    "resend": "^6.12.4",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^25.9.3",
+    "@types/supertest": "^7.2.0",
     "nodemon": "^3.1.10",
     "supertest": "^7.1.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   }
 }

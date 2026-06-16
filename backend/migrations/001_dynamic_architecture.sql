@@ -1,6 +1,4 @@
-CREATE DATABASE IF NOT EXISTS maravilha_ibope
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE maravilha_ibope;
+-- Migração não destrutiva: cria a arquitetura dinâmica ao lado das tabelas legadas.
 
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
