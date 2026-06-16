@@ -1,4 +1,4 @@
-import type { AnalysisTypeRecord, AppUser, ImportLogInput, ImportRecord, ParsedWorkbook, Repository, Scalar, UserRole } from "../types.js";
+import type { AnalysisTypeRecord, AppUser, ImportLogInput, ImportRecord, ParsedWorkbook, Repository, Scalar, UserRole } from "../../src/types.js";
 
 export class MemoryRepository implements Repository {
   private nextUserId = 1;
@@ -16,7 +16,7 @@ export class MemoryRepository implements Repository {
   async getUserById(id: number) { return this.users.find((user) => user.id === id) ?? null; }
   async listUsers() { return this.users.map(({ password_hash: _password, ...user }) => user as AppUser); }
   async createLocalUser(input: { name: string; email: string; passwordHash: string; role: UserRole }) {
-    if (await this.findUserByEmail(input.email)) throw new Error("Já existe um usuário com este email.");
+    if (await this.findUserByEmail(input.email)) throw new Error("Ja existe um usuario com este email.");
     const user: AppUser = { id: this.nextUserId++, nome: input.name, email: input.email.toLowerCase(), password_hash: input.passwordHash, role: input.role, ativo: true };
     this.users.push(user);
     return user;

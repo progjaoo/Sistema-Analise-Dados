@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "create-admin": "tsx scripts/seedUsers.ts",
     "db:setup": "tsx scripts/setupDatabase.ts",
     "dev": "tsx watch src/server.ts",

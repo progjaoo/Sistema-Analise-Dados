@@ -4,7 +4,7 @@ import fs from "node:fs";
 import request from "supertest";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
-import { MemoryRepository } from "../src/repositories/memoryRepository.js";
+import { MemoryRepository } from "./support/memoryRepository.js";
 
 const workbookPath = process.env.IBOPE_FIXTURE_PATH || "/Users/joaomvalente/Documents/Trabalho/ANALISE DE DADOS/Analise ibope - ABRIL/Relatório_Ibope_Abril_MaravilhaFM.xlsx";
 
