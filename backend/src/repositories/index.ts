@@ -4,5 +4,9 @@ import { MemoryRepository } from "./memoryRepository.js";
 import { MysqlRepository } from "./mysqlRepository.js";
 
 export function createRepository(env = process.env): Repository {
-  return env.DB_HOST && env.DB_USER && env.DB_NAME ? new MysqlRepository(createPool(env)) : new MemoryRepository();
+  if (env.DB_HOST && env.DB_USER && env.DB_NAME) return new MysqlRepository(createPool(env));
+  if (env.NODE_ENV === "production" || env.REQUIRE_DATABASE === "true") {
+    throw new Error("Banco de dados não configurado. Defina DB_HOST, DB_USER e DB_NAME.");
+  }
+  return new MemoryRepository();
 }

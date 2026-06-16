@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./config/env.js";
 import bcrypt from "bcryptjs";
 import fs from "node:fs/promises";
 import { createApp } from "./app.js";
@@ -8,18 +8,27 @@ import { parseDynamicWorkbook } from "./parsers/dynamicWorkbookParser.js";
 const { app, repository } = createApp();
 const port = Number(process.env.PORT || 3001);
 
-if (!process.env.DB_HOST && process.env.SEED_DEFAULT_PASSWORD) {
-  const passwordHash = await bcrypt.hash(process.env.SEED_DEFAULT_PASSWORD, 4);
+function isDuplicateEntry(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ER_DUP_ENTRY";
+}
+
+if (process.env.SEED_DEFAULT_PASSWORD) {
+  const passwordHash = await bcrypt.hash(process.env.SEED_DEFAULT_PASSWORD, 12);
   for (const user of [
     { name: "Administrador GTF", email: process.env.SEED_ADMIN_EMAIL || "ti@grupogtf.com.br", role: "ADMIN" as const },
     { name: "Edson Albertassi", email: process.env.SEED_EDSON_EMAIL || "edson.albertassi@grupogtf.com.br", role: "ANALYST" as const },
     { name: "Leonardo Salles", email: process.env.SEED_LEONARDO_EMAIL || "leonardo.salles@grupogtf.com.br", role: "ANALYST" as const },
   ]) {
-    if (!await repository.findUserByEmail(user.email)) await repository.createLocalUser({ ...user, passwordHash });
+    try {
+      if (!await repository.findUserByEmail(user.email)) await repository.createLocalUser({ ...user, passwordHash });
+    } catch (error) {
+      if (!isDuplicateEntry(error)) throw error;
+      logger.info({ email: user.email }, "seed_user_already_exists");
+    }
   }
 }
 
-if (process.env.DEMO_XLSX_PATH) {
+if (process.env.LOAD_DEMO_DATA === "true" && process.env.DEMO_XLSX_PATH) {
   try {
     const imports = await repository.listImports();
     if (!imports.length) {
