@@ -15,6 +15,14 @@ import { userRoutes } from "./routes/users.js";
 import { createEmailService } from "./services/email/index.js";
 import type { Repository } from "./types.js";
 
+const defaultCorsOrigins = [
+  "http://localhost:5173",
+  "https://grupogtf.com.br",
+  "https://www.grupogtf.com.br",
+  "https://portal88.com.br",
+  "https://www.portal88.com.br",
+];
+
 function normalizeOrigin(value?: string) {
   const trimmed = value?.trim().replace(/\/$/, "");
   if (!trimmed) return null;
@@ -28,6 +36,7 @@ function normalizeOrigin(value?: string) {
 function allowedCorsOrigins(env: NodeJS.ProcessEnv) {
   return new Set(
     [
+      ...defaultCorsOrigins,
       ...(env.FRONTEND_ORIGIN || "http://localhost:5173").split(","),
       env.FRONTEND_PUBLIC_URL,
     ]
@@ -41,9 +50,19 @@ export function createApp({ repository = createRepository(), env = process.env }
   const emailService = createEmailService(repository, env);
   const auth = createAuthMiddleware(repository, env);
   const origins = allowedCorsOrigins(env);
+  const allowAllCorsOrigins = env.CORS_ALLOW_ALL === "true";
 
   app.disable("x-powered-by"); app.set("trust proxy", 1); app.use(pinoHttp({ logger }));
-  app.use(cors({ origin(origin, callback) { const normalized = normalizeOrigin(origin); if (!normalized || origins.has(normalized)) return callback(null, true); return callback(new Error("Origem não autorizada pelo CORS.")); }, credentials: true, optionsSuccessStatus: 204 }));
+  app.use(cors({
+    origin(origin, callback) {
+      const normalized = normalizeOrigin(origin);
+      if (allowAllCorsOrigins || !normalized || origins.has(normalized)) return callback(null, true);
+      logger.warn({ origin, normalizedOrigin: normalized, allowedOrigins: [...origins] }, "cors_origin_denied");
+      return callback(new Error("Origem não autorizada pelo CORS."));
+    },
+    credentials: true,
+    optionsSuccessStatus: 204,
+  }));
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/api/health", (_req, res) => res.json({ status: "ok", storage: repository.constructor.name, timestamp: new Date().toISOString() }));
