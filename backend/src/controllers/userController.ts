@@ -23,6 +23,26 @@ export function createUserController(repository: Repository, emailService: Retur
         return res.status(201).json({ user: { ...user, password_hash: undefined } });
       } catch (error) { return next(error); }
     },
-    setActive: async (req: Request, res: Response, next: NextFunction) => { try { const changed = await repository.setUserActive(Number(req.params.id), Boolean(req.body?.ativo)); return changed ? res.json({ ok: true }) : res.status(404).json({ error: "Usuário não encontrado." }); } catch (error) { return next(error); } },
+    setActive: async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const id = Number(req.params.id);
+        if (!Number.isInteger(id) || id <= 0 || typeof req.body?.ativo !== "boolean") return res.status(400).json({ error: "Informe um usuário e status válidos." });
+        if (req.user?.id === id && req.body.ativo === false) return res.status(400).json({ error: "Você não pode inativar a própria conta administrativa." });
+        const changed = await repository.setUserActive(id, req.body.ativo);
+        return changed ? res.json({ ok: true, message: req.body.ativo ? "Usuário ativado." : "Usuário inativado." }) : res.status(404).json({ error: "Usuário não encontrado." });
+      } catch (error) { return next(error); }
+    },
+    updatePassword: async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const id = Number(req.params.id);
+        const password = String(req.body?.senha ?? "");
+        if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Usuário inválido." });
+        if (!validPassword(password)) return res.status(400).json({ error: "A senha deve ter pelo menos 8 caracteres, incluindo letras e números." });
+        const user = await repository.getUserById(id);
+        if (!user) return res.status(404).json({ error: "Usuário não encontrado." });
+        await repository.updateUserPassword(id, await bcrypt.hash(password, 12));
+        return res.json({ ok: true, message: "Senha do usuário atualizada." });
+      } catch (error) { return next(error); }
+    },
   };
 }
