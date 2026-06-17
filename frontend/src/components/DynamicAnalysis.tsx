@@ -77,6 +77,13 @@ function stationColor(name: string, index = 0) {
   return COLORS[index % COLORS.length] || NEUTRAL;
 }
 
+function canonicalCompetitor(name: string) {
+  if (isMaravilha(name)) return "Maravilha FM";
+  if (is93(name)) return "93 FM";
+  if (isMelodia(name)) return "Melodia FM";
+  return name;
+}
+
 function analysisText(dataOrSlug: AnalysisResponse | string) {
   return typeof dataOrSlug === "string" ? lower(dataOrSlug) : lower(`${dataOrSlug.analysis.nome} ${dataOrSlug.analysis.slug} ${dataOrSlug.analysis.source_sheet}`);
 }
@@ -211,6 +218,30 @@ function exportSvgAsPdf(svg: SVGSVGElement | null, fileName: string) {
     URL.revokeObjectURL(url);
     const [, base64] = canvas.toDataURL("image/jpeg", 0.92).split(",");
     downloadBlob(createPdfFromJpeg(base64ToBytes(base64), canvas.width, canvas.height), fileName);
+  };
+  image.src = url;
+}
+
+function exportSvgAsPng(svg: SVGSVGElement | null, fileName: string) {
+  if (!svg) return;
+  const source = new XMLSerializer().serializeToString(svg);
+  const url = URL.createObjectURL(new Blob([source], { type: "image/svg+xml;charset=utf-8" }));
+  const image = new Image();
+  image.onload = () => {
+    const viewBox = svg.viewBox.baseVal;
+    const width = Math.round(viewBox.width || svg.clientWidth || 1200);
+    const height = Math.round(viewBox.height || svg.clientHeight || 420);
+    const canvas = document.createElement("canvas");
+    canvas.width = width * 2;
+    canvas.height = height * 2;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.scale(2, 2);
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    URL.revokeObjectURL(url);
+    downloadBlob(new Blob([base64ToBytes(canvas.toDataURL("image/png").split(",")[1]) as BlobPart], { type: "image/png" }), fileName);
   };
   image.src = url;
 }
@@ -371,23 +402,57 @@ function DailyHeatmap({ data }: { data: AnalysisResponse }) {
   </div>;
 }
 
-function SimpleLine({ rows, series, colors, averageLabel }: { rows: Record<string, number | string | null>[]; series: string[]; colors?: Record<string, string>; averageLabel?: string }) {
+function linePath(points: { x: number; y: number }[]) {
+  if (!points.length) return "";
+  if (points.length === 1) return `M${points[0].x},${points[0].y}`;
+  return points.reduce((path, point, index) => {
+    if (!index) return `M${point.x},${point.y}`;
+    const previous = points[index - 1];
+    const cx = (previous.x + point.x) / 2;
+    return `${path} Q${previous.x},${previous.y} ${cx},${(previous.y + point.y) / 2} T${point.x},${point.y}`;
+  }, "");
+}
+
+function SimpleLine({ rows, series, colors, averageLabel, svgRef, emphasize }: { rows: Record<string, Scalar>[]; series: string[]; colors?: Record<string, string>; averageLabel?: string; svgRef?: { current: SVGSVGElement | null }; emphasize?: string }) {
+  const [hover, setHover] = useState<{ label: string; serie: string; value: number; x: number; y: number } | null>(null);
   const width = 980; const height = 320; const left = 44; const right = 20; const top = 18; const bottom = 46;
   const values = rows.flatMap((row) => series.map((key) => typeof row[key] === "number" ? row[key] as number : null)).filter((value): value is number => value !== null);
   const max = Math.max(...values, 1); const min = Math.min(...values, 0); const span = max - min || 1;
   const x = (index: number) => left + (index / Math.max(rows.length - 1, 1)) * (width - left - right);
   const y = (value: number) => top + (1 - (value - min) / span) * (height - top - bottom);
   const avg = values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1);
-  return <div className="svg-scroll"><svg viewBox={`0 0 ${width} ${height}`} className="line-svg"><rect width={width} height={height} fill="#fff"/><line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="#e2e8f0"/><line x1={left} x2={left} y1={top} y2={height - bottom} stroke="#e2e8f0"/>{averageLabel && <><line x1={left} x2={width - right} y1={y(avg)} y2={y(avg)} stroke={GOLD} strokeDasharray="6 4"/><text x={left + 8} y={y(avg) - 6} fill={GOLD} fontSize="11" fontWeight="800">{averageLabel}: {format(avg)}</text></>}{series.map((key, seriesIndex) => { const points = rows.map((row, index) => ({ x: x(index), y: y(typeof row[key] === "number" ? row[key] as number : min), value: row[key] })).filter((point) => typeof point.value === "number"); const d = points.map((point, index) => `${index ? "L" : "M"}${point.x},${point.y}`).join(" "); return <g key={key}><path d={d} fill="none" stroke={colors?.[key] || COLORS[seriesIndex % COLORS.length]} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>{points.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r="4" fill={colors?.[key] || COLORS[seriesIndex % COLORS.length]}><title>{`${key}\n${rows[index]?.label ?? rows[index]?.time ?? ""}\nOPM: ${format(point.value as number)}`}</title></circle>)}</g>; })}{rows.map((row, index) => index % Math.ceil(rows.length / 12 || 1) === 0 ? <text key={index} x={x(index)} y={height - 18} fill="#64748b" fontSize="10" textAnchor="middle">{String(row.label ?? row.time ?? "")}</text> : null)}</svg></div>;
+  if (!rows.length || !series.length) return <Empty title="Gráfico" text="Selecione filtros para visualizar os dados."/>;
+  return <div className="line-chart-wrap" onMouseLeave={() => setHover(null)}>
+    {hover && <div className="chart-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}><strong>{hover.serie}</strong><span>{hover.label}</span><span>OPM: {format(hover.value)}</span></div>}
+    <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="line-svg" role="img" aria-label="Gráfico de linha de audiência">
+      <rect width={width} height={height} fill="#fff"/>
+      <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="#e2e8f0"/>
+      <line x1={left} x2={left} y1={top} y2={height - bottom} stroke="#e2e8f0"/>
+      {averageLabel && <><line x1={left} x2={width - right} y1={y(avg)} y2={y(avg)} stroke={GOLD} strokeDasharray="6 4"/><text x={left + 8} y={y(avg) - 6} fill={GOLD} fontSize="11" fontWeight="800">{averageLabel}: {format(avg)}</text></>}
+      {series.map((key, seriesIndex) => {
+        const seriesColor = colors?.[key] || COLORS[seriesIndex % COLORS.length];
+        const points = rows.map((row, index) => ({ x: x(index), y: y(typeof row[key] === "number" ? row[key] as number : min), value: row[key], label: String(row.label ?? row.time ?? "") })).filter((point) => typeof point.value === "number");
+        const peak = Math.max(...points.map((point) => point.value as number), -Infinity);
+        return <g key={key}><path d={linePath(points)} fill="none" stroke={seriesColor} strokeWidth={emphasize && key !== emphasize ? 2 : 3.8} strokeOpacity={emphasize && key !== emphasize ? .48 : 1} strokeLinecap="round" strokeLinejoin="round"/>{points.map((point) => { const isPeak = point.value === peak; return <circle key={`${key}-${point.label}`} cx={point.x} cy={point.y} r={isPeak ? 5.5 : 3.8} fill={isPeak ? GOLD : seriesColor} stroke="#fff" strokeWidth="1.5" onMouseMove={(event) => setHover({ label: point.label, serie: key, value: point.value as number, x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY })}/>; })}</g>;
+      })}
+      {rows.map((row, index) => index % Math.ceil(rows.length / 12 || 1) === 0 ? <text key={index} x={x(index)} y={height - 18} fill="#64748b" fontSize="10" textAnchor="middle">{String(row.label ?? row.time ?? "")}</text> : null)}
+    </svg>
+  </div>;
 }
 
 function SomatorioView({ data }: { data: AnalysisResponse }) {
   const [mode, setMode] = useState<"line" | "bar">("line");
+  const svgRef = useRef<SVGSVGElement>(null);
   const { dimensions, metricColumn } = audienceColumns(data);
   const xColumn = findColumn(dimensions, ["dia", "data", "horario", "hora", "periodo"]) || dimensions[0] || data.analysis.schema_json.columns[0];
   const rows = useMemo(() => data.rows.map((row) => ({ label: String(row[xColumn?.key || ""] ?? ""), valor: numberValue(row[metricColumn?.key || data.analysis.schema_json.yKeys[0] || ""] ?? null) })).filter((row) => row.label || row.valor).sort((a, b) => timeRank(a.label) - timeRank(b.label)), [data, metricColumn?.key, xColumn?.key]);
-  const rank = rows.map((row) => ({ name: row.label, opm: row.valor, position: 0, color: row.valor === Math.max(...rows.map((item) => item.valor)) ? MARAVILHA : NEUTRAL }));
-  return <Panel title="Maravilha FM - Somatório" subtitle="Linha com média semanal e alternância para barras."><div className="mb-3 flex gap-2"><button className={`filter-chip ${mode === "line" ? "filter-chip-active" : ""}`} onClick={() => setMode("line")}>Linha</button><button className={`filter-chip ${mode === "bar" ? "filter-chip-active" : ""}`} onClick={() => setMode("bar")}>Barras Verticais</button></div>{mode === "line" ? <SimpleLine rows={rows.map((row) => ({ label: row.label, valor: row.valor }))} series={["valor"]} colors={{ valor: MARAVILHA }} averageLabel="Média Semanal"/> : <VerticalBars rows={rank} />}</Panel>;
+  if (!rows.length) return <Empty title="Maravilha FM - Somatório" text="Não foi possível identificar horário e OPM."/>;
+  const peak = Math.max(...rows.map((item) => item.valor));
+  const rank = rows.map((row) => ({ name: row.label, opm: row.valor, position: 0, color: row.valor === peak ? GOLD : MARAVILHA }));
+  return <Panel title="Maravilha FM - Somatório" subtitle="Comportamento da audiência ao longo do dia.">
+    <div className="analysis-toolbar"><div className="flex gap-2"><button className={`filter-chip ${mode === "line" ? "filter-chip-active" : ""}`} onClick={() => setMode("line")}>Linha</button><button className={`filter-chip ${mode === "bar" ? "filter-chip-active" : ""}`} onClick={() => setMode("bar")}>Barras Verticais</button></div><button className="button-secondary" onClick={() => exportSvgAsPng(svgRef.current, "maravilha-somatorio.png")}>Exportar PNG</button></div>
+    {mode === "line" ? <SimpleLine rows={rows.map((row) => ({ label: row.label, valor: row.valor }))} series={["valor"]} colors={{ valor: MARAVILHA }} averageLabel="Média Semanal" svgRef={svgRef}/> : <VerticalBars rows={rank} />}
+  </Panel>;
 }
 
 function VerticalBars({ rows }: { rows: RankRow[] }) {
@@ -397,34 +462,80 @@ function VerticalBars({ rows }: { rows: RankRow[] }) {
 
 function pivotPoints(points: AudiencePoint[], selectedStations: string[]) {
   const times = unique(points.map((point) => point.time)).sort((a, b) => timeRank(String(a)) - timeRank(String(b)) || String(a).localeCompare(String(b), "pt-BR"));
-  return times.map((time) => Object.fromEntries([["time", time], ...selectedStations.map((station) => [station, points.find((point) => point.time === time && point.station === station)?.opm ?? null])]) as Record<string, string | number | null>);
+  return times.map((time) => Object.fromEntries([["time", time], ["label", time], ...selectedStations.map((station) => [station, points.find((point) => point.time === time && point.station === station)?.opm ?? null])]) as Record<string, Scalar>);
 }
 
 function MultiStationLine({ data, title, maxStations = 3 }: { data: AnalysisResponse; title: string; maxStations?: number }) {
   const points = useMemo(() => audiencePoints(data), [data]);
   const days = useMemo(() => dayOrder.filter((day) => points.some((point) => point.dayKey === day.key)), [points]);
   const [day, setDay] = useState(days[0]?.key || "geral");
-  const dayPoints = points.filter((point) => point.dayKey === day || (!days.length && day === "geral"));
-  const stationOptions = unique(dayPoints.map((point) => point.station)).slice(0, 80);
-  const [selected, setSelected] = useState<string[]>(stationOptions.slice(0, Math.min(maxStations, 3)));
-  const selectedStations = selected.filter((station) => stationOptions.includes(station)).slice(0, maxStations);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [touched, setTouched] = useState(false);
+  const [mobileStation, setMobileStation] = useState("");
+  const dayPoints = useMemo(() => points.filter((point) => point.dayKey === day || (!days.length && day === "geral")), [day, days.length, points]);
+  const stationOptions = useMemo(() => unique(dayPoints.map((point) => point.station)).slice(0, 80), [dayPoints]);
+  const defaultStations = useMemo(() => stationOptions.slice(0, Math.min(maxStations, 3)), [maxStations, stationOptions]);
+  const selectedStations = useMemo(() => (touched ? selected : defaultStations).filter((station) => stationOptions.includes(station)).slice(0, maxStations), [defaultStations, maxStations, selected, stationOptions, touched]);
+  const activeMobileStation = stationOptions.includes(mobileStation) ? mobileStation : selectedStations[0] || stationOptions[0] || "";
   const chartRows = useMemo(() => pivotPoints(dayPoints, selectedStations), [dayPoints, selectedStations]);
-  const colors = Object.fromEntries(selectedStations.map((station, index) => [station, stationColor(station, index)]));
-  const toggle = useCallback((station: string) => setSelected((current) => current.includes(station) ? current.filter((item) => item !== station) : [...current, station].slice(-maxStations)), [maxStations]);
-  return <div className="space-y-4"><Panel title={title} subtitle="Selecione dia e emissoras. Não renderiza todas simultaneamente."><div className="grid gap-3 md:grid-cols-[220px_1fr]"><label className="field-label">Dia<select className="input" value={day} onChange={(event) => { setDay(event.target.value); setSelected([]); }}>{days.length ? days.map((item) => <option key={item.key} value={item.key}>{item.label}</option>) : <option value="geral">Geral</option>}</select></label><div><p className="field-label mb-2">Emissoras, máx. {maxStations}</p><div className="chip-list">{stationOptions.map((station) => <button key={station} className={`filter-chip ${selectedStations.includes(station) ? "filter-chip-active" : ""}`} onClick={() => toggle(station)}>{station}</button>)}</div></div></div></Panel><Panel title="Gráfico principal"><SimpleLine rows={chartRows} series={selectedStations} colors={colors}/></Panel><FilteredTable rows={dayPoints.filter((point) => !selectedStations.length || selectedStations.includes(point.station)).map((point) => ({ Horário: point.time, Emissora: point.station, OPM: point.opm }))}/></div>;
+  const mobileRows = useMemo(() => pivotPoints(dayPoints, activeMobileStation ? [activeMobileStation] : []), [activeMobileStation, dayPoints]);
+  const colors = useMemo(() => Object.fromEntries(selectedStations.map((station, index) => [station, stationColor(station, index)])), [selectedStations]);
+  const toggle = useCallback((station: string) => { setTouched(true); setSelected((current) => current.includes(station) ? current.filter((item) => item !== station) : [...current, station].slice(-maxStations)); }, [maxStations]);
+  const tableRows = useMemo(() => dayPoints.filter((point) => !selectedStations.length || selectedStations.includes(point.station)).map((point) => ({ Horário: point.time, Emissora: point.station, OPM: point.opm })), [dayPoints, selectedStations]);
+  return <div className="space-y-4"><Panel title={title} subtitle="Selecione dia e emissoras. Não renderiza todas simultaneamente."><div className="grid gap-3 md:grid-cols-[220px_1fr]"><label className="field-label">Dia<select className="input" value={day} onChange={(event) => { setDay(event.target.value); setTouched(false); setSelected([]); setMobileStation(""); }}>{days.length ? days.map((item) => <option key={item.key} value={item.key}>{item.label}</option>) : <option value="geral">Geral</option>}</select></label><div><p className="field-label mb-2">Emissoras, máx. {maxStations}</p><div className="chip-list">{stationOptions.map((station) => <button key={station} className={`filter-chip ${selectedStations.includes(station) ? "filter-chip-active" : ""}`} onClick={() => toggle(station)}>{station}</button>)}</div></div></div></Panel><div className="desktop-chart"><Panel title="Gráfico principal"><SimpleLine rows={chartRows} series={selectedStations} colors={colors}/></Panel></div><div className="mobile-chart"><Panel title="Gráfico principal"><label className="field-label">Emissora<select className="input" value={activeMobileStation} onChange={(event) => setMobileStation(event.target.value)}>{stationOptions.map((station) => <option key={station}>{station}</option>)}</select></label><SimpleLine rows={mobileRows} series={activeMobileStation ? [activeMobileStation] : []} colors={{ [activeMobileStation]: stationColor(activeMobileStation) }}/></Panel></div><FilteredTable rows={tableRows}/></div>;
+}
+
+function competitorPoints(data: AnalysisResponse) {
+  return audiencePoints(data).map((point) => ({ ...point, station: canonicalCompetitor(point.station) })).filter((point) => ["Maravilha FM", "93 FM", "Melodia FM"].includes(point.station));
 }
 
 function CompetitiveView({ data }: { data: AnalysisResponse }) {
-  const target = ["Maravilha FM", "93 FM", "Melodia FM"];
-  const points = audiencePoints(data).filter((point) => target.some((name) => lower(point.station).includes(lower(name).replace(" fm", ""))));
-  const rows = pivotPoints(points, unique(points.map((point) => point.station)).slice(0, 3));
-  const stations = unique(points.map((point) => point.station)).slice(0, 3);
-  return <Panel title="Análise Competitiva" subtitle="Barras agrupadas para Maravilha, 93 FM e Melodia."><GroupedBars rows={rows} series={stations}/></Panel>;
+  const stations = ["Maravilha FM", "93 FM", "Melodia FM"];
+  const points = useMemo(() => competitorPoints(data), [data]);
+  const rows = useMemo(() => pivotPoints(points, stations), [points]);
+  if (!rows.length) return <Empty title="Análise Competitiva" text="Não foi possível identificar Maravilha FM, 93 FM e Melodia FM."/>;
+  return <div className="space-y-4"><Panel title="Análise Competitiva" subtitle="Barras agrupadas para comparação direta."><GroupedBars rows={rows} series={stations}/></Panel><Panel title="Evolução por horário" subtitle="Maravilha FM em destaque contra as concorrentes."><SimpleLine rows={rows} series={stations} colors={{ "Maravilha FM": MARAVILHA, "93 FM": BLUE_93, "Melodia FM": MELODIA }} emphasize="Maravilha FM"/></Panel></div>;
 }
 
 function GroupedBars({ rows, series }: { rows: Record<string, Scalar>[]; series: string[] }) {
+  const [hover, setHover] = useState<{ label: string; x: number; y: number; values: { station: string; value: number }[] } | null>(null);
   const max = Math.max(...rows.flatMap((row) => series.map((key) => numberValue(row[key] ?? null))), 1);
-  return <div className="grouped-bars">{rows.slice(0, 36).map((row) => <div key={String(row.time)} className="group"><div className="group-bars">{series.map((key, index) => <i key={key} style={{ height: `${Math.max(4, (numberValue(row[key] ?? null) / max) * 100)}%`, background: stationColor(key, index) }} title={`${String(row.time)}\n${key}: ${format(row[key] ?? null)}`}/>)}</div><span>{String(row.time)}</span></div>)}</div>;
+  return <div className="grouped-bars grouped-bars-modern" onMouseLeave={() => setHover(null)}>{hover && <div className="chart-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}><strong>{hover.label}</strong>{hover.values.map((item, index) => <span key={item.station}>{index + 1}º {item.station}: {format(item.value)}</span>)}</div>}{rows.slice(0, 36).map((row) => { const values = series.map((key) => ({ station: key, value: numberValue(row[key] ?? null) })).sort((a, b) => b.value - a.value); const maravilha = values.find((item) => item.station === "Maravilha FM")?.value ?? 0; const leader = values[0]?.value || 0; const diff = leader ? ((maravilha - leader) / leader) * 100 : 0; return <div key={String(row.time)} className="group" onMouseMove={(event) => setHover({ label: `${String(row.time)} | Dif. Maravilha x líder: ${format(diff)}%`, x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY, values })}><div className="group-bars">{series.map((key, index) => <i key={key} style={{ height: `${Math.max(4, (numberValue(row[key] ?? null) / max) * 100)}%`, background: stationColor(key, index) }}/>)}</div><span>{String(row.time)}</span></div>; })}</div>;
+}
+
+function TimeRangeView({ data }: { data: AnalysisResponse }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const timeRanges = [
+    { key: "madrugada", label: "Madrugada | 00h-05h", start: 0, end: 359 },
+    { key: "manha", label: "Manhã | 06h-11h", start: 360, end: 719 },
+    { key: "tarde", label: "Tarde | 12h-17h", start: 720, end: 1079 },
+    { key: "noite", label: "Noite | 18h-23h", start: 1080, end: 1439 },
+    { key: "todos", label: "Dia completo", start: 0, end: 1439 },
+  ];
+  const points = useMemo(() => audiencePoints(data), [data]);
+  const days = useMemo(() => dayOrder.filter((day) => points.some((point) => point.dayKey === day.key)), [points]);
+  const [day, setDay] = useState("");
+  const [range, setRange] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [mobileStation, setMobileStation] = useState("");
+  const dayPoints = useMemo(() => points.filter((point) => !day || point.dayKey === day), [day, points]);
+  const stationOptions = useMemo(() => unique(dayPoints.map((point) => point.station)).slice(0, 80), [dayPoints]);
+  const selectedStations = useMemo(() => selected.filter((station) => stationOptions.includes(station)).slice(0, 2), [selected, stationOptions]);
+  const activeRange = timeRanges.find((item) => item.key === range);
+  const filteredRange = useMemo(() => activeRange ? dayPoints.filter((point) => { const rank = timeRank(point.time); return rank >= activeRange.start && rank <= activeRange.end; }) : [], [activeRange, dayPoints]);
+  const filtered = useMemo(() => filteredRange.filter((point) => selectedStations.includes(point.station)), [filteredRange, selectedStations]);
+  const chartRows = useMemo(() => pivotPoints(filtered, selectedStations), [filtered, selectedStations]);
+  const colors = useMemo(() => Object.fromEntries(selectedStations.map((station, index) => [station, stationColor(station, index)])), [selectedStations]);
+  const ready = Boolean(day && range && selectedStations.length);
+  const activeMobileStation = stationOptions.includes(mobileStation) ? mobileStation : selectedStations[0] || stationOptions[0] || "";
+  const mobileRows = useMemo(() => pivotPoints(filteredRange.filter((point) => point.station === activeMobileStation), activeMobileStation ? [activeMobileStation] : []), [activeMobileStation, filteredRange]);
+  const toggle = useCallback((station: string) => setSelected((current) => current.includes(station) ? current.filter((item) => item !== station) : [...current, station].slice(-2)), []);
+  return <div className="space-y-4"><Panel title="Análise por Faixa Horária" subtitle="Escolha os filtros antes de renderizar o gráfico."><div className="grid gap-3 md:grid-cols-3"><label className="field-label">Dia da semana<select className="input" value={day} onChange={(event) => { setDay(event.target.value); setRange(""); setSelected([]); setMobileStation(""); }}><option value="">Selecione</option>{days.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label><label className="field-label">Faixa horária<select className="input" value={range} onChange={(event) => setRange(event.target.value)} disabled={!day}><option value="">Selecione</option>{timeRanges.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label><div><p className="field-label mb-2">Emissora, máx. 2</p><div className="chip-list time-range-chip-list">{stationOptions.map((station) => <button key={station} className={`filter-chip ${selectedStations.includes(station) ? "filter-chip-active" : ""}`} onClick={() => toggle(station)} disabled={!day}>{station}</button>)}</div></div></div></Panel>{ready ? <><div className="desktop-chart"><Panel title="Gráfico principal"><div className="analysis-toolbar"><span className="daily-helper">Comparação controlada: {selectedStations.join(" x ")}</span><button className="button-secondary" onClick={() => exportSvgAsPng(svgRef.current, "analise-faixa-horaria.png")}>Exportar PNG</button></div><SimpleLine rows={chartRows} series={selectedStations} colors={colors} svgRef={svgRef}/></Panel></div><div className="mobile-chart"><Panel title="Gráfico principal"><label className="field-label">Emissora<select className="input" value={activeMobileStation} onChange={(event) => setMobileStation(event.target.value)}>{stationOptions.map((station) => <option key={station}>{station}</option>)}</select></label><SimpleLine rows={mobileRows} series={activeMobileStation ? [activeMobileStation] : []} colors={{ [activeMobileStation]: stationColor(activeMobileStation) }}/></Panel></div><MiniBarTable rows={filtered.map((point) => ({ Horário: point.time, Emissora: point.station, OPM: point.opm }))}/></> : <Empty title="Gráfico principal" text="Selecione dia, faixa horária e pelo menos uma emissora para renderizar."/>}</div>;
+}
+
+function MiniBarTable({ rows }: { rows: Record<string, Scalar>[] }) {
+  const max = Math.max(...rows.map((row) => numberValue(row.OPM ?? null)), 1);
+  return <FilteredTable rows={rows.map((row) => ({ ...row, Barra: `${Math.round((numberValue(row.OPM ?? null) / max) * 100)}%` }))}/>;
 }
 
 function FilteredTable({ rows }: { rows: Record<string, Scalar>[] }) {
@@ -438,7 +549,7 @@ function FilteredTable({ rows }: { rows: Record<string, Scalar>[] }) {
   const visible = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
   const changeSort = (key: string) => setSort((current) => current.key === key ? { key, direction: current.direction === "asc" ? "desc" : "asc" } : { key, direction: "asc" });
   if (!columns.length) return null;
-  return <Panel title="Dados da análise" subtitle={`${filtered.length} registros filtrados. Tabela paginada para performance.`}><div className="mb-3"><input className="input max-w-md" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Pesquisar"/></div><div className="table-scroll"><table className="data-table"><thead><tr>{columns.map((column) => <th key={column}><button onClick={() => changeSort(column)}>{column}</button></th>)}</tr></thead><tbody>{visible.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{format(row[column] ?? null)}</td>)}</tr>)}</tbody></table></div><div className="mt-3 flex items-center justify-between gap-3"><button className="button-secondary" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Anterior</button><span className="text-xs font-bold text-slate-500">Página {currentPage} de {totalPages}</span><button className="button-secondary" disabled={currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>Próxima</button></div></Panel>;
+  return <Panel title="Dados da análise" subtitle={`${filtered.length} registros filtrados. Tabela paginada para performance.`}><div className="mb-3"><input className="input max-w-md" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Pesquisar"/></div><div className="table-scroll"><table className="data-table"><thead><tr>{columns.map((column) => <th key={column}><button onClick={() => changeSort(column)}>{column}</button></th>)}</tr></thead><tbody>{visible.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{column === "Barra" ? <span className="mini-bar-cell"><i style={{ width: String(row[column] ?? "0%") }}/></span> : format(row[column] ?? null)}</td>)}</tr>)}</tbody></table></div><div className="mt-3 flex items-center justify-between gap-3"><button className="button-secondary" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Anterior</button><span className="text-xs font-bold text-slate-500">Página {currentPage} de {totalPages}</span><button className="button-secondary" disabled={currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>Próxima</button></div></Panel>;
 }
 
 function Empty({ title, text }: { title: string; text: string }) { return <Panel title={title}><div className="grid min-h-56 place-items-center text-center text-sm font-bold text-slate-400">{text}</div></Panel>; }
@@ -459,7 +570,7 @@ export function DynamicAnalysis({ slug, importId }: { slug: string; importId: nu
   if (query.isError || !data) return <ErrorState message={errorMessage(query.error)}/>;
   const metrics = data.analysis.schema_json.yKeys;
   const changeFilter = (key: string, value: string) => setFilters((current) => { const next = { ...current }; if (value) next[key] = value; else delete next[key]; return next; });
-  const view = isRanking(data) ? <RankingGeneralChart data={data}/> : isDailyMaravilha(data) ? <DailyHeatmap data={data}/> : isSomatorio(data) ? <SomatorioView data={data}/> : isAllStationsDaily(data) ? <MultiStationLine data={data} title="Todas Emissoras - Dia a Dia" maxStations={4}/> : isTimeRange(data) ? <MultiStationLine data={data} title="Análise por Faixa Horária Concorrentes" maxStations={2}/> : isCompetitive(data) ? <CompetitiveView data={data}/> : data.analysis.tipo_visualizacao === "kpi" ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{metrics.map((key) => { const column = columns.find((item) => item.key === key); return <Kpi key={key} label={column?.label || key} value={format(data.summary[key]?.sum ?? null)} detail={`Média: ${format(data.summary[key]?.average ?? null)}`}/>; })}</div> : <GenericView data={data}/>;
+  const view = isRanking(data) ? <RankingGeneralChart data={data}/> : isDailyMaravilha(data) ? <DailyHeatmap data={data}/> : isSomatorio(data) ? <SomatorioView data={data}/> : isAllStationsDaily(data) ? <MultiStationLine data={data} title="Todas Emissoras - Dia a Dia" maxStations={4}/> : isTimeRange(data) ? <TimeRangeView data={data}/> : isCompetitive(data) ? <CompetitiveView data={data}/> : data.analysis.tipo_visualizacao === "kpi" ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{metrics.map((key) => { const column = columns.find((item) => item.key === key); return <Kpi key={key} label={column?.label || key} value={format(data.summary[key]?.sum ?? null)} detail={`Média: ${format(data.summary[key]?.average ?? null)}`}/>; })}</div> : <GenericView data={data}/>;
   const showGenericFilters = Boolean(data.analysis.schema_json.filters.length) && !isAllStationsDaily(data) && !isTimeRange(data);
   return <div className="space-y-5">{showGenericFilters && <Panel title="Filtros"><div className="flex flex-wrap gap-3">{data.analysis.schema_json.filters.map((key) => { const column = columns.find((item) => item.key === key); return <label className="select-wrap" key={key}><span>{column?.label || key}</span><select value={filters[key] || ""} onChange={(event) => changeFilter(key, event.target.value)}><option value="">Todos</option>{data.options[key]?.map((value) => <option key={value}>{value}</option>)}</select></label>; })}</div></Panel>}{view}</div>;
 }
