@@ -13,7 +13,22 @@ export const slugify = (value: unknown) => plain(value).normalize("NFD").replace
   .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 180) || "analise";
 const keyify = (value: unknown) => slugify(value).replace(/-/g, "_");
 const nonEmpty = (value: Scalar) => value !== null && value !== "";
+function parseNumericText(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || /[a-zA-Z]/.test(trimmed)) return null;
+  const cleaned = trimmed.replace(/%$/, "").replace(/\s/g, "");
+  if (!/^[+-]?(?:\d{1,3}(?:\.\d{3})+|\d+)?(?:,\d+)?$|^[+-]?\d+(?:\.\d+)?$/.test(cleaned)) return null;
+  const normalizedValue = cleaned.includes(",") ? cleaned.replace(/\./g, "").replace(",", ".") : cleaned;
+  const parsed = Number(normalizedValue);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function coerceScalar(value: Scalar): Scalar {
+  if (typeof value !== "string") return value;
+  const parsed = parseNumericText(value);
+  return parsed ?? plain(value);
+}
 const isNumeric = (value: Scalar) => typeof value === "number" && Number.isFinite(value);
+const numericLike = (value: Scalar) => isNumeric(value) || (typeof value === "string" && parseNumericText(value) !== null);
 
 function sheetMatrix(sheet: XLSX.WorkSheet): Matrix {
   const rows = XLSX.utils.sheet_to_json<Scalar[]>(sheet, { header: 1, raw: true, defval: null, blankrows: false });
@@ -25,7 +40,7 @@ function sheetMatrix(sheet: XLSX.WorkSheet): Matrix {
       for (let column = merge.s.c; column <= merge.e.c; column += 1) rows[row]![column] = source;
     }
   }
-  return rows.map((row) => row.map((value) => (value as unknown) instanceof Date ? (value as unknown as Date).toISOString() : value));
+  return rows.map((row) => row.map((value) => (value as unknown) instanceof Date ? (value as unknown as Date).toISOString() : coerceScalar(value)));
 }
 
 function headerScore(rows: Matrix, index: number) {
@@ -36,7 +51,7 @@ function headerScore(rows: Matrix, index: number) {
   const unique = new Set(values.map(normalized)).size;
   const nextRows = rows.slice(index + 1, index + 5);
   const dataSignals = nextRows.reduce((score, next) => score + next.filter(nonEmpty).length, 0);
-  const numericSignals = nextRows.reduce((score, next) => score + next.filter(isNumeric).length, 0);
+  const numericSignals = nextRows.reduce((score, next) => score + next.filter(numericLike).length, 0);
   return texts * 8 + unique * 2 + Math.min(dataSignals, 20) + Math.min(numericSignals, 20) - index * 0.2;
 }
 
@@ -111,7 +126,7 @@ function extractTable(rows: Matrix, headerIndex: number) {
 
 function inferColumnType(values: Scalar[]): AnalysisColumn["type"] {
   const present = values.filter(nonEmpty);
-  if (present.length && present.every(isNumeric)) return "number";
+  if (present.length && present.every(numericLike)) return "number";
   if (present.length && present.every((value) => typeof value === "boolean")) return "boolean";
   if (present.length && present.every((value) => typeof value === "string" && !Number.isNaN(Date.parse(value)))) return "date";
   return "string";
@@ -168,9 +183,15 @@ export function parseDynamicWorkbook(buffer: Buffer): ParsedWorkbook {
     }
     const columns: AnalysisColumn[] = table.columns.map((column) => {
       const type = inferColumnType(table.rows.map((row) => row[column.key] ?? null));
-      const indexLike = /POSICAO|RANK|ORDEM|(^|\s)ID($|\s)/.test(normalized(column.label));
-      return { ...column, type, role: type === "number" && !indexLike ? "metric" : "dimension" };
+      const label = normalized(column.label);
+      const indexLike = /POSICAO|RANK|ORDEM|(^|\s)ID($|\s)/.test(label);
+      const dimensionLike = /EMISSORA|RADIO|VEICULO|ESTACAO|NOME|DIA|SEMANA|DATA|HORA|HORARIO|FAIXA|BLOCO|PERIODO|TURNO|GRUPO|SERIE/.test(label);
+      return { ...column, type, role: type === "number" && !indexLike && !dimensionLike ? "metric" : "dimension" };
     });
+    for (const column of columns) {
+      if (column.type !== "number") continue;
+      for (const row of table.rows) row[column.key] = coerceScalar(row[column.key] ?? null);
+    }
     const dimensions = columns.filter((column) => column.role === "dimension");
     const metrics = columns.filter((column) => column.role === "metric");
     const filters = dimensions.filter((column) => {
