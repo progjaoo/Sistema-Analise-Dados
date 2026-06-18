@@ -26,9 +26,9 @@ export function createAnalysisController(repository: Repository) {
         const result = await repository.getAnalysisData(String(req.params.slug), importId);
         if (!result) return res.status(404).json({ error: "Análise não encontrada para esta importação." });
         const allowedFilters = new Set(result.analysis.schema_json.filters);
-        const filters = Object.fromEntries(Object.entries(req.query).filter(([key, value]) => key !== "import_id" && allowedFilters.has(key) && value !== undefined).map(([key, value]) => [key, String(value)]));
+        const filters = Object.fromEntries(Object.entries(req.query).filter(([key, value]) => key !== "import_id" && allowedFilters.has(key) && value !== undefined && value !== "undefined" && value !== "null" && value !== "").map(([key, value]) => [key, String(value)]));
         const rows = result.rows.filter((row) => Object.entries(filters).every(([key, value]) => String(row[key] ?? "") === value));
-        const options = Object.fromEntries(result.analysis.schema_json.filters.map((key) => [key, [...new Set(result.rows.map((row) => row[key]).filter((value) => value !== null).map(String))].sort()]));
+        const options = Object.fromEntries(result.analysis.schema_json.filters.map((key) => [key, [...new Set(result.rows.map((row) => row[key]).filter((value) => value !== null && value !== undefined && value !== "").map(String).filter((value) => value !== "undefined" && value !== "null"))].sort()]));
         return res.json({ analysis: result.analysis, rows, options, summary: summarize(rows, result.analysis.schema_json) });
       } catch (error) { return next(error); }
     },

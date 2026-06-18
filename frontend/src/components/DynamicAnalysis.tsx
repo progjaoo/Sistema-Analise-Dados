@@ -90,14 +90,28 @@ function analysisText(dataOrSlug: AnalysisResponse | string) {
 function isRanking(dataOrSlug: AnalysisResponse | string) { const text = analysisText(dataOrSlug); return text.includes("ranking") && text.includes("geral"); }
 function isDailyMaravilha(dataOrSlug: AnalysisResponse | string) { const text = analysisText(dataOrSlug); return text.includes("maravilha") && text.includes("dia") && !text.includes("somatorio") && !text.includes("ranking"); }
 function isSomatorio(dataOrSlug: AnalysisResponse | string) { const text = analysisText(dataOrSlug); return text.includes("maravilha") && (text.includes("somatorio") || text.includes("soma")); }
-function isAllStationsDaily(dataOrSlug: AnalysisResponse | string) { const text = analysisText(dataOrSlug); return (text.includes("todas") || text.includes("todos")) && text.includes("emissora") && text.includes("dia"); }
+function isAllStationsDaily(dataOrSlug: AnalysisResponse | string) { const text = analysisText(dataOrSlug); return text.includes("emissora") && (text.includes("dia") || text.includes("diaria")); }
 function isTimeRange(dataOrSlug: AnalysisResponse | string) { const text = analysisText(dataOrSlug); return text.includes("faixa") && (text.includes("concorr") || text.includes("conco") || text.includes("horaria") || text.includes("horario")); }
 function isCompetitive(dataOrSlug: AnalysisResponse | string) { const text = analysisText(dataOrSlug); return text.includes("competitiva") || (text.includes("93") && text.includes("melodia") && !text.includes("faixa")); }
 
 function unique<T>(values: T[]) { return [...new Set(values.filter(Boolean))] as T[]; }
 
+function rowBackedColumns(data: AnalysisResponse) {
+  const rowKeys = new Set(data.rows.flatMap((row) => Object.keys(row)));
+  const schemaColumns = data.analysis.schema_json.columns.filter((column) => rowKeys.has(column.key));
+  const schemaKeys = new Set(schemaColumns.map((column) => column.key));
+  const inferred = [...rowKeys].filter((key) => !schemaKeys.has(key)).map((key) => {
+    const name = lower(key);
+    const isDimension = ["emissora", "emissoras", "radio", "veiculo", "estacao", "nome", "grupo", "serie", "bloco", "blocos", "horario", "hora", "faixa", "periodo", "dia", "data"].some((item) => name.includes(item));
+    const isDay = Boolean(canonicalDay(key));
+    const hasNumber = data.rows.some((row) => typeof row[key] === "number" || numberValue(row[key] ?? null) > 0);
+    return { key, label: key, type: hasNumber ? "number" : "string", role: isDimension && !isDay ? "dimension" : "metric" } as AnalysisColumn;
+  });
+  return [...schemaColumns, ...inferred];
+}
+
 function audienceColumns(data: AnalysisResponse) {
-  const columns = data.analysis.schema_json.columns;
+  const columns = rowBackedColumns(data);
   const dimensions = columns.filter((column) => column.role === "dimension");
   const metrics = columns.filter((column) => column.role === "metric" || data.analysis.schema_json.yKeys.includes(column.key));
   const dayByValues = dimensions.map((column) => ({ column, hits: data.rows.filter((row) => canonicalDay(row[column.key])).length })).sort((a, b) => b.hits - a.hits)[0];
@@ -320,12 +334,34 @@ function DailySkeleton() {
 }
 
 function normalizeMaravilhaPoints(data: AnalysisResponse) {
-  const points = audiencePoints(data).filter((point) => isMaravilha(point.station) || !point.station || point.station === "Geral");
+  const { dimensions, metrics, timeColumn } = audienceColumns(data);
+  const dayMetrics = metrics.map((column) => ({ column, day: canonicalDay(column.label) || canonicalDay(column.key) })).filter((item): item is { column: AnalysisColumn; day: DayOption } => Boolean(item.day));
+  if (dayMetrics.length >= 2) {
+    const fallbackTimeColumn = timeColumn || findColumn(dimensions, ["bloco", "horario", "hora", "faixa", "periodo"]) || dimensions[0] || data.analysis.schema_json.columns[0];
+    return data.rows.flatMap((row) => {
+      const time = String(row[fallbackTimeColumn?.key || ""] ?? "").trim();
+      if (!time) return [];
+      return dayMetrics.map(({ column, day }) => ({
+        dayKey: day.key,
+        dayLabel: day.label,
+        time,
+        station: "Maravilha FM",
+        opm: numberValue(row[column.key] ?? null),
+        source: row,
+      }));
+    });
+  }
+
+  const allPoints = audiencePoints(data);
+  const maravilhaPoints = allPoints.filter((point) => isMaravilha(point.station) || !point.station || point.station === "Geral");
+  const points = maravilhaPoints.length ? maravilhaPoints : allPoints;
   const grouped = new Map<string, AudiencePoint>();
   for (const point of points) {
-    const key = `${point.dayKey}|${point.time}`;
+    const metricAsDay = canonicalDay(point.station);
+    const normalized = metricAsDay ? { ...point, dayKey: metricAsDay.key, dayLabel: metricAsDay.label, station: "Maravilha FM" } : point;
+    const key = `${normalized.dayKey}|${normalized.time}`;
     const current = grouped.get(key);
-    if (!current || point.opm > current.opm) grouped.set(key, point);
+    if (!current || normalized.opm > current.opm) grouped.set(key, normalized);
   }
   return [...grouped.values()];
 }
@@ -369,6 +405,7 @@ function DayComparisonLine({ rows, days }: { rows: Record<string, Scalar>[]; day
 }
 
 function DailyHeatmap({ data }: { data: AnalysisResponse }) {
+  const heatmapRef = useRef<HTMLDivElement>(null);
   const [selectedDayKeys, setSelectedDayKeys] = useState<string[]>([]);
   const [mobileDayKey, setMobileDayKey] = useState("");
   const [hover, setHover] = useState<HeatmapHover>(null);
@@ -384,6 +421,10 @@ function DailyHeatmap({ data }: { data: AnalysisResponse }) {
   const lineRows = useMemo(() => times.map((time) => Object.fromEntries([["time", time], ...selectedDays.map((day) => [day.key, map.get(`${day.key}|${time}`)?.opm ?? null])]) as Record<string, Scalar>), [map, selectedDays, times]);
   const activeMobileDay = days.find((day) => day.key === mobileDayKey) || days[0];
   const mobilePoints = useMemo(() => activeMobileDay ? times.map((time) => ({ time, point: map.get(`${activeMobileDay.key}|${time}`) })) : [], [activeMobileDay, map, times]);
+  const showHeatmapTooltip = useCallback((event: React.MouseEvent<HTMLDivElement>, day: DayOption, time: string, point: AudiencePoint) => {
+    const rect = heatmapRef.current?.getBoundingClientRect();
+    setHover({ day: day.label, time, opm: point.opm, x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) });
+  }, []);
   const toggleDay = useCallback((key: string) => setSelectedDayKeys((current) => {
     if (current.includes(key)) return current.length > 1 ? current.filter((item) => item !== key) : current;
     return [...current, key].slice(-2);
@@ -391,9 +432,9 @@ function DailyHeatmap({ data }: { data: AnalysisResponse }) {
   if (!points.length || !times.length || !days.length) return <Empty title="Maravilha FM Dia a Dia" text="Não foi possível identificar dia, horário e OPM." />;
   return <div className="space-y-4">
     <Panel title="Maravilha FM Dia a Dia" subtitle="Heatmap de audiência por dia e horário.">
-      <div className="daily-heatmap-shell" onMouseLeave={() => setHover(null)}>
+      <div ref={heatmapRef} className="daily-heatmap-shell" onMouseLeave={() => setHover(null)}>
         {hover && <div className="daily-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}><strong>{hover.day}</strong><span>Horário: {hover.time}</span><span>OPM: {format(hover.opm)}</span></div>}
-        <div className="heatmap-wrap daily-heatmap-desktop"><div className="heatmap-lite" style={{ gridTemplateColumns: `110px repeat(${times.length}, minmax(48px, 1fr))` }}><div className="heatmap-head">Dia</div>{times.map((time) => <div key={String(time)} className="heatmap-head">{time}</div>)}{days.map((day) => <div className="contents" key={day.key}><div className="heatmap-label">{day.label}</div>{times.map((time) => { const point = map.get(`${day.key}|${time}`); return <div key={`${day.key}-${time}`} className="heatmap-cell" style={{ background: point ? heatColor(point.opm, max) : "#f1f5f9", color: point && point.opm / (max || 1) > .45 ? "#fff" : "#334155" }} onMouseMove={(event) => point && setHover({ day: day.label, time: String(time), opm: point.opm, x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY })}>{point ? format(point.opm) : "—"}</div>; })}</div>)}</div></div>
+        <div className="heatmap-wrap daily-heatmap-desktop"><div className="heatmap-lite" style={{ gridTemplateColumns: `110px repeat(${times.length}, minmax(48px, 1fr))` }}><div className="heatmap-head">Dia</div>{times.map((time) => <div key={String(time)} className="heatmap-head">{time}</div>)}{days.map((day) => <div className="contents" key={day.key}><div className="heatmap-label">{day.label}</div>{times.map((time) => { const point = map.get(`${day.key}|${time}`); return <div key={`${day.key}-${time}`} className="heatmap-cell" style={{ background: point ? heatColor(point.opm, max) : "#f1f5f9", color: point && point.opm / (max || 1) > .45 ? "#fff" : "#334155" }} onMouseMove={(event) => point && showHeatmapTooltip(event, day, String(time), point)}>{point ? format(point.opm) : "—"}</div>; })}</div>)}</div></div>
         <div className="daily-mobile-panel"><label className="field-label">Dia<select className="input" value={activeMobileDay?.key || ""} onChange={(event) => setMobileDayKey(event.target.value)}>{days.map((day) => <option key={day.key} value={day.key}>{day.label}</option>)}</select></label><div className="daily-mobile-list">{mobilePoints.map(({ time, point }) => <div key={String(time)}><span>{time}</span><strong>{point ? format(point.opm) : "—"}</strong><i style={{ width: `${Math.max(4, ((point?.opm ?? 0) / (max || 1)) * 100)}%`, background: point ? heatColor(point.opm, max) : "#e2e8f0" }}/></div>)}</div></div>
       </div>
     </Panel>
@@ -440,18 +481,35 @@ function SimpleLine({ rows, series, colors, averageLabel, svgRef, emphasize }: {
   </div>;
 }
 
+function SomatorioSkeleton() {
+  return <Panel title="Maravilha FM - Somatório dos Dias"><div className="daily-skeleton"><div/><div/><div/><div/><div/><div/></div></Panel>;
+}
+
+function somatorioRows(data: AnalysisResponse) {
+  const columns = data.analysis.schema_json.columns;
+  const blockColumn = findColumn(columns, ["bloco", "blocos", "horario", "hora", "faixa", "periodo"]) || columns[0];
+  const valueColumn = findColumn(columns.filter((column) => column.key !== blockColumn?.key), ["dias", "dia", "opm", "audiencia", "ouvintes", "media", "valor", "total", "soma", "somatorio"])
+    || columns.find((column) => column.key !== blockColumn?.key && data.rows.some((row) => numberValue(row[column.key] ?? null) > 0))
+    || data.analysis.schema_json.yKeys.map((key) => columns.find((column) => column.key === key)).find(Boolean);
+  if (!blockColumn || !valueColumn) return [];
+  return data.rows
+    .map((row) => ({ label: String(row[blockColumn.key] ?? "").trim(), valor: numberValue(row[valueColumn.key] ?? null) }))
+    .filter((row) => row.label || row.valor > 0)
+    .sort((a, b) => timeRank(a.label) - timeRank(b.label) || a.label.localeCompare(b.label, "pt-BR"));
+}
+
 function SomatorioView({ data }: { data: AnalysisResponse }) {
   const [mode, setMode] = useState<"line" | "bar">("line");
   const svgRef = useRef<SVGSVGElement>(null);
-  const { dimensions, metricColumn } = audienceColumns(data);
-  const xColumn = findColumn(dimensions, ["dia", "data", "horario", "hora", "periodo"]) || dimensions[0] || data.analysis.schema_json.columns[0];
-  const rows = useMemo(() => data.rows.map((row) => ({ label: String(row[xColumn?.key || ""] ?? ""), valor: numberValue(row[metricColumn?.key || data.analysis.schema_json.yKeys[0] || ""] ?? null) })).filter((row) => row.label || row.valor).sort((a, b) => timeRank(a.label) - timeRank(b.label)), [data, metricColumn?.key, xColumn?.key]);
-  if (!rows.length) return <Empty title="Maravilha FM - Somatório" text="Não foi possível identificar horário e OPM."/>;
+  const rows = useMemo(() => somatorioRows(data), [data]);
+  if (!rows.length) return <Empty title="Maravilha FM - Somatório dos Dias" text="Não foi possível identificar as colunas BLOCOS e DIAS."/>;
   const peak = Math.max(...rows.map((item) => item.valor));
+  const average = rows.reduce((sum, row) => sum + row.valor, 0) / Math.max(rows.length, 1);
   const rank = rows.map((row) => ({ name: row.label, opm: row.valor, position: 0, color: row.valor === peak ? GOLD : MARAVILHA }));
-  return <Panel title="Maravilha FM - Somatório" subtitle="Comportamento da audiência ao longo do dia.">
-    <div className="analysis-toolbar"><div className="flex gap-2"><button className={`filter-chip ${mode === "line" ? "filter-chip-active" : ""}`} onClick={() => setMode("line")}>Linha</button><button className={`filter-chip ${mode === "bar" ? "filter-chip-active" : ""}`} onClick={() => setMode("bar")}>Barras Verticais</button></div><button className="button-secondary" onClick={() => exportSvgAsPng(svgRef.current, "maravilha-somatorio.png")}>Exportar PNG</button></div>
-    {mode === "line" ? <SimpleLine rows={rows.map((row) => ({ label: row.label, valor: row.valor }))} series={["valor"]} colors={{ valor: MARAVILHA }} averageLabel="Média Semanal" svgRef={svgRef}/> : <VerticalBars rows={rank} />}
+  return <Panel title="Maravilha FM - Somatório dos Dias" subtitle="Comportamento da audiência por bloco ao longo do dia.">
+    <div className="somatorio-summary"><span><strong>{format(peak)}</strong>Pico de audiência</span><span><strong>{format(average)}</strong>Média Semanal</span><span><strong>{rows.length}</strong>Blocos analisados</span></div>
+    <div className="analysis-toolbar"><div className="flex gap-2"><button className={`filter-chip ${mode === "line" ? "filter-chip-active" : ""}`} onClick={() => setMode("line")}>Linha</button><button className={`filter-chip ${mode === "bar" ? "filter-chip-active" : ""}`} onClick={() => setMode("bar")}>Barras Verticais</button></div><button className="button-secondary" disabled={mode !== "line"} onClick={() => exportSvgAsPng(svgRef.current, "maravilha-somatorio-dias.png")}>Exportar PNG</button></div>
+    {mode === "line" ? <SimpleLine rows={rows.map((row) => ({ label: row.label, "Somatório dos Dias": row.valor }))} series={["Somatório dos Dias"]} colors={{ "Somatório dos Dias": MARAVILHA }} averageLabel="Média Semanal" svgRef={svgRef}/> : <VerticalBars rows={rank} />}
   </Panel>;
 }
 
@@ -485,22 +543,168 @@ function MultiStationLine({ data, title, maxStations = 3 }: { data: AnalysisResp
   return <div className="space-y-4"><Panel title={title} subtitle="Selecione dia e emissoras. Não renderiza todas simultaneamente."><div className="grid gap-3 md:grid-cols-[220px_1fr]"><label className="field-label">Dia<select className="input" value={day} onChange={(event) => { setDay(event.target.value); setTouched(false); setSelected([]); setMobileStation(""); }}>{days.length ? days.map((item) => <option key={item.key} value={item.key}>{item.label}</option>) : <option value="geral">Geral</option>}</select></label><div><p className="field-label mb-2">Emissoras, máx. {maxStations}</p><div className="chip-list">{stationOptions.map((station) => <button key={station} className={`filter-chip ${selectedStations.includes(station) ? "filter-chip-active" : ""}`} onClick={() => toggle(station)}>{station}</button>)}</div></div></div></Panel><div className="desktop-chart"><Panel title="Gráfico principal"><SimpleLine rows={chartRows} series={selectedStations} colors={colors}/></Panel></div><div className="mobile-chart"><Panel title="Gráfico principal"><label className="field-label">Emissora<select className="input" value={activeMobileStation} onChange={(event) => setMobileStation(event.target.value)}>{stationOptions.map((station) => <option key={station}>{station}</option>)}</select></label><SimpleLine rows={mobileRows} series={activeMobileStation ? [activeMobileStation] : []} colors={{ [activeMobileStation]: stationColor(activeMobileStation) }}/></Panel></div><FilteredTable rows={tableRows}/></div>;
 }
 
-function competitorPoints(data: AnalysisResponse) {
-  return audiencePoints(data).map((point) => ({ ...point, station: canonicalCompetitor(point.station) })).filter((point) => ["Maravilha FM", "93 FM", "Melodia FM"].includes(point.station));
+
+function allStationsDailyRows(data: AnalysisResponse) {
+  const columns = rowBackedColumns(data);
+  const { dimensions } = audienceColumns(data);
+  const stationColumn = findColumn(columns, ["emissora", "emissoras", "radio", "veiculo", "estacao", "nome"]) || dimensions[0] || columns[0];
+  const dayColumns = columns
+    .filter((column) => column.key !== stationColumn?.key)
+    .map((column) => ({ column, day: canonicalDay(column.label) || canonicalDay(column.key) }))
+    .filter((item): item is { column: AnalysisColumn; day: DayOption } => Boolean(item.day));
+
+  if (!dayColumns.length) {
+    const points = audiencePoints(data).filter((point) => point.dayKey !== "geral" && point.station && point.opm > 0);
+    const fallbackDays = dayOrder.filter((day) => points.some((point) => point.dayKey === day.key));
+    const grouped = new Map<string, { station: string; sums: Record<string, number>; counts: Record<string, number> }>();
+    for (const point of points) {
+      const current = grouped.get(point.station) || { station: point.station, sums: {}, counts: {} };
+      current.sums[point.dayKey] = (current.sums[point.dayKey] || 0) + point.opm;
+      current.counts[point.dayKey] = (current.counts[point.dayKey] || 0) + 1;
+      grouped.set(point.station, current);
+    }
+    const rows = [...grouped.values()].map((item) => Object.fromEntries([
+      ["station", item.station],
+      ...fallbackDays.map((day) => [day.key, item.counts[day.key] ? item.sums[day.key] / item.counts[day.key] : null]),
+    ]) as Record<string, Scalar>);
+    return { rows, days: fallbackDays };
+  }
+
+  const days = dayOrder.filter((day) => dayColumns.some((item) => item.day.key === day.key));
+  const rows = data.rows.map((row) => {
+    const station = String(row[stationColumn?.key || ""] ?? "").trim();
+    const values = Object.fromEntries(dayColumns.map(({ column, day }) => [day.key, numberValue(row[column.key] ?? null)]));
+    return { station, ...values } as Record<string, Scalar>;
+  }).filter((row) => String(row.station ?? "").trim());
+  return { rows, days };
+}
+
+function AllStationsDailyView({ data }: { data: AnalysisResponse }) {
+  const { rows, days } = useMemo(() => allStationsDailyRows(data), [data]);
+  const [day, setDay] = useState(days[0]?.key || "");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [search, setSearch] = useState("");
+  const [mobileStation, setMobileStation] = useState("");
+  const stationOptions = useMemo(() => rows.map((row) => String(row.station ?? "")).filter(Boolean), [rows]);
+  const defaultStations = useMemo(() => {
+    const maravilha = stationOptions.find(isMaravilha);
+    const strongest = [...rows].sort((a, b) => numberValue(b[day] ?? null) - numberValue(a[day] ?? null)).map((row) => String(row.station ?? "")).filter((station) => station && station !== maravilha).slice(0, maravilha ? 3 : 4);
+    return maravilha ? [maravilha, ...strongest].slice(0, 4) : strongest;
+  }, [day, rows, stationOptions]);
+  const selectedStations = useMemo(() => (selected.length ? selected : defaultStations).filter((station) => stationOptions.includes(station)).slice(0, 4), [defaultStations, selected, stationOptions]);
+  const filteredStationOptions = useMemo(() => { const term = lower(search); return stationOptions.filter((station) => !term || lower(station).includes(term)).slice(0, 80); }, [search, stationOptions]);
+  const chartRows = useMemo(() => days.map((item) => Object.fromEntries([["label", item.label], ["time", item.label], ...selectedStations.map((station) => [station, numberValue(rows.find((row) => row.station === station)?.[item.key] ?? null)])]) as Record<string, Scalar>), [days, rows, selectedStations]);
+  const dayRanking = useMemo(() => rows
+    .map((row) => ({ name: String(row.station ?? ""), opm: numberValue(row[day] ?? null), position: 0, color: NEUTRAL }))
+    .filter((row) => row.name && row.opm > 0)
+    .sort((a, b) => b.opm - a.opm)
+    .slice(0, 15)
+    .map((row, index) => ({ ...row, position: index + 1, color: isMaravilha(row.name) ? MARAVILHA : index === 0 ? GOLD : NEUTRAL })), [day, rows]);
+  const tableRows = useMemo(() => rows.filter((row) => !selected.length || selectedStations.includes(String(row.station))).map((row) => ({ Emissora: row.station, Dia: days.find((item) => item.key === day)?.label || day, OPM: numberValue(row[day] ?? null) })).sort((a, b) => numberValue(b.OPM) - numberValue(a.OPM)), [day, days, rows, selected.length, selectedStations]);
+  const colors = useMemo(() => Object.fromEntries(selectedStations.map((station, index) => [station, stationColor(station, index)])), [selectedStations]);
+  const activeMobileStation = stationOptions.includes(mobileStation) ? mobileStation : selectedStations[0] || stationOptions[0] || "";
+  const mobileRows = useMemo(() => days.map((item) => ({ label: item.label, time: item.label, [activeMobileStation]: numberValue(rows.find((row) => row.station === activeMobileStation)?.[item.key] ?? null) })), [activeMobileStation, days, rows]);
+  const toggle = useCallback((station: string) => setSelected((current) => current.includes(station) ? current.filter((item) => item !== station) : [...current, station].slice(-4)), []);
+  if (!rows.length || !days.length) return <Empty title="Todas Emissoras - Dia a Dia" text="Não foi possível identificar emissoras e colunas de dias."/>;
+  return <div className="space-y-4">
+    <Panel title="Todas Emissoras - Dia a Dia" subtitle="Comparação controlada por emissora e dia da semana.">
+      <div className="allstations-filter-grid">
+        <label className="field-label">Dia da semana<select className="input" value={day} onChange={(event) => setDay(event.target.value)}>{days.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+        <label className="field-label">Buscar emissora<input className="input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Digite o nome da emissora"/></label>
+      </div>
+      <div className="allstations-selector"><p className="field-label">Emissoras selecionadas, máx. 4</p><div className="chip-list allstations-chip-list">{filteredStationOptions.map((station) => <button key={station} className={`filter-chip ${selectedStations.includes(station) ? "filter-chip-active" : ""}`} onClick={() => toggle(station)}>{station}</button>)}</div></div>
+    </Panel>
+    <HorizontalBars rows={dayRanking} title={`Ranking do dia - ${days.find((item) => item.key === day)?.label || "Dia selecionado"}`}/>
+    <div className="desktop-chart"><Panel title="Comparativo semanal" subtitle="Linhas apenas das emissoras selecionadas."><SimpleLine rows={chartRows} series={selectedStations} colors={colors} emphasize={selectedStations.find(isMaravilha)}/></Panel></div>
+    <div className="mobile-chart"><Panel title="Comparativo semanal"><label className="field-label">Emissora<select className="input" value={activeMobileStation} onChange={(event) => setMobileStation(event.target.value)}>{stationOptions.map((station) => <option key={station}>{station}</option>)}</select></label><SimpleLine rows={mobileRows} series={activeMobileStation ? [activeMobileStation] : []} colors={{ [activeMobileStation]: stationColor(activeMobileStation) }}/></Panel></div>
+    <MiniBarTable rows={tableRows}/>
+  </div>;
+}
+
+function competitiveRows(data: AnalysisResponse) {
+  const columns = rowBackedColumns(data);
+  const timeColumn = findColumn(columns, ["bloco", "blocos", "horario", "hora", "faixa", "periodo"]) || columns[0];
+  const targets = ["Maravilha FM", "93 FM", "Melodia FM"];
+  const competitorColumns = columns
+    .filter((column) => column.key !== timeColumn?.key)
+    .map((column) => ({ column, station: canonicalCompetitor(`${column.label} ${column.key}`) }))
+    .filter((item) => targets.includes(item.station));
+
+  if (competitorColumns.length >= 2) {
+    const wideRows = data.rows.map((row, index) => {
+      const time = String(row[timeColumn?.key || ""] ?? `Item ${index + 1}`).trim();
+      return Object.fromEntries([["time", time], ["label", time], ...targets.map((station) => [station, numberValue(row[competitorColumns.find((item) => item.station === station)?.column.key || ""] ?? null)])]) as Record<string, Scalar>;
+    }).filter((row) => targets.some((station) => numberValue(row[station] ?? null) > 0));
+    if (wideRows.length) return wideRows;
+  }
+
+  const points = audiencePoints(data).map((point) => ({ ...point, station: canonicalCompetitor(point.station) })).filter((point) => targets.includes(point.station));
+  return pivotPoints(points, targets).filter((row) => targets.some((station) => numberValue(row[station] ?? null) > 0));
+}
+
+function CompetitiveGroupedBars({ rows }: { rows: Record<string, Scalar>[] }) {
+  const series = ["Maravilha FM", "93 FM", "Melodia FM"];
+  const [hover, setHover] = useState<{ label: string; x: number; y: number; values: { station: string; value: number; position: number; diff: number }[] } | null>(null);
+  const visible = rows.slice(0, 36);
+  const width = Math.max(980, 90 * visible.length + 70);
+  const height = 340;
+  const left = 48;
+  const right = 24;
+  const top = 20;
+  const bottom = 56;
+  const max = Math.max(...visible.flatMap((row) => series.map((key) => numberValue(row[key] ?? null))), 1);
+  const groupWidth = (width - left - right) / Math.max(visible.length, 1);
+  const barWidth = Math.min(18, Math.max(8, groupWidth / 5));
+  const y = (value: number) => top + (1 - value / max) * (height - top - bottom);
+  return <div className="competitive-bars" onMouseLeave={() => setHover(null)}>
+    {hover && <div className="chart-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}><strong>{hover.label}</strong>{hover.values.map((item) => <span key={item.station}>{item.position}º {item.station}: {format(item.value)} | Dif.: {format(item.diff)}%</span>)}</div>}
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Barras agrupadas da análise competitiva">
+      <rect width={width} height={height} fill="#fff"/>
+      <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="#e2e8f0"/>
+      <line x1={left} x2={left} y1={top} y2={height - bottom} stroke="#e2e8f0"/>
+      {visible.map((row, rowIndex) => {
+        const groupX = left + rowIndex * groupWidth + groupWidth / 2;
+        const values = series.map((station) => ({ station, value: numberValue(row[station] ?? null) })).sort((a, b) => b.value - a.value);
+        const maravilha = values.find((item) => item.station === "Maravilha FM")?.value ?? 0;
+        const ranked = values.map((item, index) => ({ ...item, position: index + 1, diff: maravilha ? ((item.value - maravilha) / maravilha) * 100 : 0 }));
+        return <g key={String(row.time)} onMouseMove={(event) => setHover({ label: String(row.time), x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY, values: ranked })}>
+          {series.map((station, index) => {
+            const value = numberValue(row[station] ?? null);
+            const x = groupX - (barWidth * 1.5) + index * (barWidth + 4);
+            const barY = y(value);
+            return <rect key={station} x={x} y={barY} width={barWidth} height={height - bottom - barY} rx="6" fill={stationColor(station, index)} opacity={station === "Maravilha FM" ? 1 : .78}/>;
+          })}
+          {rowIndex % Math.ceil(visible.length / 10 || 1) === 0 ? <text x={groupX} y={height - 20} fill="#64748b" fontSize="10" fontWeight="800" textAnchor="middle">{String(row.time)}</text> : null}
+        </g>;
+      })}
+    </svg>
+    <div className="daily-line-legend">{series.map((station, index) => <span key={station}><i style={{ background: stationColor(station, index) }}/>{station}</span>)}</div>
+  </div>;
+}
+
+function CompetitiveMobileBars({ rows }: { rows: Record<string, Scalar>[] }) {
+  const [time, setTime] = useState(String(rows[0]?.time ?? ""));
+  const series = ["Maravilha FM", "93 FM", "Melodia FM"];
+  const row = rows.find((item) => String(item.time) === time) || rows[0];
+  const values = series.map((station, index) => ({ station, value: numberValue(row?.[station] ?? null), color: stationColor(station, index) })).sort((a, b) => b.value - a.value);
+  const max = Math.max(...values.map((item) => item.value), 1);
+  return <Panel title="Comparação direta"><label className="field-label">Horário / Bloco<select className="input" value={time} onChange={(event) => setTime(event.target.value)}>{rows.map((item) => <option key={String(item.time)} value={String(item.time)}>{String(item.time)}</option>)}</select></label><div className="competitive-mobile-bars">{values.map((item, index) => <div key={item.station}><span>{index + 1}º {item.station}</span><strong>{format(item.value)}</strong><i style={{ width: `${Math.max(4, (item.value / max) * 100)}%`, background: item.color }}/></div>)}</div></Panel>;
 }
 
 function CompetitiveView({ data }: { data: AnalysisResponse }) {
   const stations = ["Maravilha FM", "93 FM", "Melodia FM"];
-  const points = useMemo(() => competitorPoints(data), [data]);
-  const rows = useMemo(() => pivotPoints(points, stations), [points]);
-  if (!rows.length) return <Empty title="Análise Competitiva" text="Não foi possível identificar Maravilha FM, 93 FM e Melodia FM."/>;
-  return <div className="space-y-4"><Panel title="Análise Competitiva" subtitle="Barras agrupadas para comparação direta."><GroupedBars rows={rows} series={stations}/></Panel><Panel title="Evolução por horário" subtitle="Maravilha FM em destaque contra as concorrentes."><SimpleLine rows={rows} series={stations} colors={{ "Maravilha FM": MARAVILHA, "93 FM": BLUE_93, "Melodia FM": MELODIA }} emphasize="Maravilha FM"/></Panel></div>;
-}
-
-function GroupedBars({ rows, series }: { rows: Record<string, Scalar>[]; series: string[] }) {
-  const [hover, setHover] = useState<{ label: string; x: number; y: number; values: { station: string; value: number }[] } | null>(null);
-  const max = Math.max(...rows.flatMap((row) => series.map((key) => numberValue(row[key] ?? null))), 1);
-  return <div className="grouped-bars grouped-bars-modern" onMouseLeave={() => setHover(null)}>{hover && <div className="chart-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}><strong>{hover.label}</strong>{hover.values.map((item, index) => <span key={item.station}>{index + 1}º {item.station}: {format(item.value)}</span>)}</div>}{rows.slice(0, 36).map((row) => { const values = series.map((key) => ({ station: key, value: numberValue(row[key] ?? null) })).sort((a, b) => b.value - a.value); const maravilha = values.find((item) => item.station === "Maravilha FM")?.value ?? 0; const leader = values[0]?.value || 0; const diff = leader ? ((maravilha - leader) / leader) * 100 : 0; return <div key={String(row.time)} className="group" onMouseMove={(event) => setHover({ label: `${String(row.time)} | Dif. Maravilha x líder: ${format(diff)}%`, x: event.nativeEvent.offsetX, y: event.nativeEvent.offsetY, values })}><div className="group-bars">{series.map((key, index) => <i key={key} style={{ height: `${Math.max(4, (numberValue(row[key] ?? null) / max) * 100)}%`, background: stationColor(key, index) }}/>)}</div><span>{String(row.time)}</span></div>; })}</div>;
+  const rows = useMemo(() => competitiveRows(data), [data]);
+  if (!rows.length) return <Empty title="Análise Competitiva" text="Não foi possível identificar as colunas da Maravilha FM, 93 FM e Melodia FM."/>;
+  const totals = stations.map((station) => ({ station, value: rows.reduce((sum, row) => sum + numberValue(row[station] ?? null), 0) / Math.max(rows.length, 1) })).sort((a, b) => b.value - a.value);
+  const maravilhaAverage = totals.find((item) => item.station === "Maravilha FM")?.value ?? 0;
+  const leader = totals[0];
+  return <div className="space-y-4">
+    <div className="competitive-kpis">{totals.map((item, index) => <div key={item.station} className={item.station === "Maravilha FM" ? "competitive-kpi-main" : ""}><span>{index + 1}º média</span><strong>{format(item.value)}</strong><small>{item.station}</small></div>)}<div><span>Dif. Maravilha x líder</span><strong>{format(leader?.value ? ((maravilhaAverage - leader.value) / leader.value) * 100 : 0)}%</strong><small>{leader?.station || "—"}</small></div></div>
+    <div className="desktop-chart"><Panel title="Análise Competitiva" subtitle="Barras agrupadas por horário/bloco."><CompetitiveGroupedBars rows={rows}/></Panel></div>
+    <div className="mobile-chart"><CompetitiveMobileBars rows={rows}/></div>
+    <Panel title="Evolução por horário" subtitle="Maravilha FM em destaque contra as concorrentes."><SimpleLine rows={rows} series={stations} colors={{ "Maravilha FM": MARAVILHA, "93 FM": BLUE_93, "Melodia FM": MELODIA }} emphasize="Maravilha FM"/></Panel>
+    <MiniBarTable rows={rows.flatMap((row) => stations.map((station) => ({ Horário: row.time, Emissora: station, OPM: numberValue(row[station] ?? null) })))} />
+  </div>;
 }
 
 function TimeRangeView({ data }: { data: AnalysisResponse }) {
@@ -565,12 +769,13 @@ export function DynamicAnalysis({ slug, importId }: { slug: string; importId: nu
   const [filters, setFilters] = useState<Record<string, string>>({});
   const query = useQuery<AnalysisResponse>({ queryKey: ["analysis-data", slug, importId, filters], queryFn: async () => (await api.get(`/analyses/${slug}/data`, { params: { import_id: importId, ...filters } })).data });
   const data = query.data;
-  const columns = useMemo(() => data?.analysis.schema_json.columns ?? [], [data]);
-  if (query.isLoading) return isRanking(slug) ? <RankingSkeleton/> : isDailyMaravilha(slug) ? <DailySkeleton/> : <Loading/>;
+  const columns = useMemo(() => data ? rowBackedColumns(data) : [], [data]);
+  if (query.isLoading) return isRanking(slug) ? <RankingSkeleton/> : isDailyMaravilha(slug) ? <DailySkeleton/> : isSomatorio(slug) ? <SomatorioSkeleton/> : <Loading/>;
   if (query.isError || !data) return <ErrorState message={errorMessage(query.error)}/>;
   const metrics = data.analysis.schema_json.yKeys;
   const changeFilter = (key: string, value: string) => setFilters((current) => { const next = { ...current }; if (value) next[key] = value; else delete next[key]; return next; });
-  const view = isRanking(data) ? <RankingGeneralChart data={data}/> : isDailyMaravilha(data) ? <DailyHeatmap data={data}/> : isSomatorio(data) ? <SomatorioView data={data}/> : isAllStationsDaily(data) ? <MultiStationLine data={data} title="Todas Emissoras - Dia a Dia" maxStations={4}/> : isTimeRange(data) ? <TimeRangeView data={data}/> : isCompetitive(data) ? <CompetitiveView data={data}/> : data.analysis.tipo_visualizacao === "kpi" ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{metrics.map((key) => { const column = columns.find((item) => item.key === key); return <Kpi key={key} label={column?.label || key} value={format(data.summary[key]?.sum ?? null)} detail={`Média: ${format(data.summary[key]?.average ?? null)}`}/>; })}</div> : <GenericView data={data}/>;
-  const showGenericFilters = Boolean(data.analysis.schema_json.filters.length) && !isAllStationsDaily(data) && !isTimeRange(data);
-  return <div className="space-y-5">{showGenericFilters && <Panel title="Filtros"><div className="flex flex-wrap gap-3">{data.analysis.schema_json.filters.map((key) => { const column = columns.find((item) => item.key === key); return <label className="select-wrap" key={key}><span>{column?.label || key}</span><select value={filters[key] || ""} onChange={(event) => changeFilter(key, event.target.value)}><option value="">Todos</option>{data.options[key]?.map((value) => <option key={value}>{value}</option>)}</select></label>; })}</div></Panel>}{view}</div>;
+  const view = isRanking(data) ? <RankingGeneralChart data={data}/> : isDailyMaravilha(data) ? <DailyHeatmap data={data}/> : isSomatorio(data) ? <SomatorioView data={data}/> : isAllStationsDaily(data) ? <AllStationsDailyView data={data}/> : isTimeRange(data) ? <TimeRangeView data={data}/> : isCompetitive(data) ? <CompetitiveView data={data}/> : data.analysis.tipo_visualizacao === "kpi" ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{metrics.map((key) => { const column = columns.find((item) => item.key === key); return <Kpi key={key} label={column?.label || key} value={format(data.summary[key]?.sum ?? null)} detail={`Média: ${format(data.summary[key]?.average ?? null)}`}/>; })}</div> : <GenericView data={data}/>;
+  const filterKeys = data.analysis.schema_json.filters.filter((key) => columns.some((column) => column.key === key));
+  const showGenericFilters = Boolean(filterKeys.length) && !isAllStationsDaily(data) && !isTimeRange(data);
+  return <div className="space-y-5">{showGenericFilters && <Panel title="Filtros"><div className="flex flex-wrap gap-3">{filterKeys.map((key) => { const column = columns.find((item) => item.key === key); const options = [...new Set((data.options[key] || []).filter((value) => value && value !== "undefined" && value !== "null"))]; return <label className="select-wrap" key={key}><span>{column?.label || key}</span><select value={filters[key] || ""} onChange={(event) => changeFilter(key, event.target.value)}><option value="">Todos</option>{options.map((value) => <option key={value}>{value}</option>)}</select></label>; })}</div></Panel>}{view}</div>;
 }

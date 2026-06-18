@@ -183,3 +183,42 @@
   .chip-list { max-height: 160px; }
   .vertical-bars, .grouped-bars { min-height: 230px; }
 }
+
+
+.allstations-filter-grid { display: grid; grid-template-columns: 220px minmax(240px, 1fr); gap: 14px; align-items: end; }
+.allstations-selector { margin-top: 14px; }
+.allstations-chip-list { max-height: 150px; }
+.allstations-chip-list .filter-chip-active { box-shadow: 0 8px 22px rgba(212, 22, 60, .18); }
+
+@media (max-width: 767px) {
+  .allstations-filter-grid { grid-template-columns: 1fr; }
+  .allstations-chip-list { max-height: 190px; }
+}
+
+
+.somatorio-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.somatorio-summary span { display: grid; gap: 3px; border: 1px solid #f1f5f9; border-radius: 16px; background: #fff7ed; padding: 12px; color: #64748b; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.somatorio-summary strong { color: #111827; font-size: 18px; font-weight: 900; letter-spacing: 0; text-transform: none; }
+
+@media (max-width: 767px) {
+  .somatorio-summary { grid-template-columns: 1fr; }
+}
+
+
+.competitive-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.competitive-kpis div { display: grid; gap: 3px; border: 1px solid #f1f5f9; border-radius: 18px; background: #fff; padding: 14px; box-shadow: 0 14px 34px rgba(15, 23, 42, .05); }
+.competitive-kpis .competitive-kpi-main { border-color: rgba(212, 22, 60, .22); background: linear-gradient(135deg, #fff, #fff1f4); }
+.competitive-kpis span { color: #94a3b8; font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
+.competitive-kpis strong { color: #111827; font-size: 20px; font-weight: 900; }
+.competitive-kpis small { color: #64748b; font-size: 12px; font-weight: 800; }
+.competitive-bars { position: relative; overflow-x: auto; border: 1px solid #f1f5f9; border-radius: 18px; background: #fff; }
+.competitive-bars svg { display: block; min-width: 920px; width: 100%; height: auto; }
+.competitive-mobile-bars { display: grid; gap: 10px; margin-top: 12px; }
+.competitive-mobile-bars div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; border: 1px solid #f1f5f9; border-radius: 14px; padding: 10px; }
+.competitive-mobile-bars span { color: #334155; font-size: 12px; font-weight: 900; }
+.competitive-mobile-bars strong { color: #111827; font-size: 12px; font-weight: 900; }
+.competitive-mobile-bars i { grid-column: 1 / -1; display: block; height: 9px; border-radius: 999px; }
+
+@media (max-width: 767px) {
+  .competitive-kpis { grid-template-columns: 1fr; }
+}
